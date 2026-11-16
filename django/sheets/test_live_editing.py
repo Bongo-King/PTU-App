@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.test import Client, TestCase
 from django.urls import reverse
-from campaigns.models import Campaign
+from campaigns.models import Campaign, CampaignMembership
 from reference.models import Capability, FormCapability, Species, SpeciesForm
 from .constants import STAT_NAMES, SKILL_NAMES
 from .editing import EditConflict
@@ -18,6 +18,10 @@ class LiveEditingTests(TestCase):
         users = get_user_model()
         cls.owner, cls.gm, cls.guest, cls.outsider = [users.objects.create_user(username=n) for n in ('owner', 'gm', 'guest', 'outsider')]
         cls.campaign = Campaign.objects.create(name='Campaign', gm=cls.gm)
+        CampaignMembership.objects.create(
+            campaign=cls.campaign,
+            user=cls.owner,
+        )
         species = Species.objects.create(name='Species')
         values = {f'{s}_base': 10 for s in STAT_NAMES}
         values.update({f'{s}_rank': 2 for s in SKILL_NAMES})
@@ -28,8 +32,18 @@ class LiveEditingTests(TestCase):
         cls.description = Capability.objects.create(name='Descriptive', value_kind='Description', description='No number')
         FormCapability.objects.create(form=cls.source, capability=cls.numeric, value=5)
         FormCapability.objects.create(form=alternate, capability=cls.numeric, value=7)
-        cls.pokemon = create_pokemon(campaign=cls.campaign, base_form=cls.source, controller=cls.owner, name='Local', current_hit_points=45, level=10)
+        cls.pokemon = create_pokemon(
+            user=cls.gm,
+            campaign=cls.campaign,
+            base_form=cls.source,
+            controller=cls.owner,
+            name="Local",
+            level=10,
+        )
+
         cls.sheet = cls.pokemon.sheet
+        cls.sheet.current_hit_points = 45
+        cls.sheet.save(update_fields=["current_hit_points"])
         cls.base_id = cls.pokemon.active_form_id
         cls.alt = add_pokemon_form(pokemon=cls.pokemon, source_form=alternate)
         cls.cap_entry = cls.sheet.capabilities.get(capability=cls.numeric)

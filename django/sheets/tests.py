@@ -74,6 +74,7 @@ class PokemonFixture(TestCase):
         cls.viewer = user.objects.create_user(username="viewer")
         cls.outsider = user.objects.create_user(username="outsider")
         cls.campaign = Campaign.objects.create(name="North", gm=cls.gm)
+        CampaignMembership.objects.create(campaign=cls.campaign, user=cls.owner,)
         cls.species = Species.objects.create(name="Test species")
         values = {f"{stat}_base": 10 for stat in STAT_NAMES}
         values.update({f"{skill}_rank": 2 for skill in SKILL_NAMES})
@@ -93,6 +94,9 @@ class PokemonFixture(TestCase):
         FormAbilityGrant.objects.create(form=cls.alternate, ability=cls.grant)
         cls.pokemon = create_pokemon(user=cls.gm, campaign=cls.campaign, base_form=cls.base, name="Test Pokémon",
                                      controller=cls.owner, level=10, nature=Nature.ADAMANT, natural_abilities=[cls.selection])
+        # Creation initializes full HP. These tests need a damaged Pokémon, so we damage it post-initialization.
+        cls.pokemon.sheet.current_hit_points = 45
+        cls.pokemon.sheet.save(update_fields=["current_hit_points"])
         cls.local_base = cls.pokemon.active_form
         cls.local_alt = add_pokemon_form(pokemon=cls.pokemon, source_form=cls.alternate)
 
@@ -166,10 +170,22 @@ class PokemonServiceTests(PokemonFixture):
         self.assertEqual(sheet.current_hit_points, 45)
 
     def test_failed_creation_is_atomic(self):
-        counts = [model.objects.count() for model in (StatSheet, PokemonProfile, PokemonForm)]
+        models = (StatSheet, PokemonProfile, PokemonForm)
+        counts = [model.objects.count() for model in models]
+
         with self.assertRaises(ValidationError):
-            create_pokemon(user=self.user, campaign=self.campaign, base_form=self.base, name="Bad", nature="Invalid")
-        self.assertEqual([model.objects.count() for model in (StatSheet, PokemonProfile, PokemonForm)], counts)
+            create_pokemon(
+                user=self.gm,
+                campaign=self.campaign,
+                base_form=self.base,
+                name="Bad",
+                nature="Invalid",
+            )
+
+        self.assertEqual(
+            [model.objects.count() for model in models],
+            counts,
+        )
 
     def test_duplicate_source_form_rejected(self):
         with self.assertRaises(ValidationError):
@@ -211,17 +227,58 @@ class PokemonServiceTests(PokemonFixture):
         self.assertEqual(local.ability_grants.get().ability_id, self.grant.pk)
 
     def test_other_campaign_move_rolls_back_creation(self):
-        other = Campaign.objects.create(name="Other campaign", gm=self.gm)
-        move = Move.objects.create(campaign=other, name="Private move", type="Normal", category="Status", frequency="At-Will", range="Self")
-        before = StatSheet.objects.count()
+        other = Campaign.objects.create(
+            name="Other campaign",
+            gm=self.gm,
+        )
+
+        move = Move.objects.create(
+            campaign=other,
+            name="Private move",
+            type="Normal",
+            category="Status",
+            frequency="At-Will",
+            range="Self",
+        )
+
+        models = (StatSheet, PokemonProfile, PokemonForm)
+        counts = [model.objects.count() for model in models]
+
         with self.assertRaises(ValidationError):
-            create_pokemon(user=cls.gm, campaign=self.campaign, base_form=self.base, name="Bad move", current_hit_points=20, moves=[move])
-        self.assertEqual(StatSheet.objects.count(), before)
+            create_pokemon(
+                user=self.gm,
+                campaign=self.campaign,
+                base_form=self.base,
+                name="Bad move",
+                moves=[move],
+            )
+
+        self.assertEqual(
+            [model.objects.count() for model in models],
+            counts,
+        )
 
     def test_shared_move_can_be_selected(self):
-        move = Move.objects.create(name="Shared move", type="Normal", category="Status", frequency="At-Will", range="Self")
-        pokemon = create_pokemon(user=cls.gm, campaign=self.campaign, base_form=self.base, name="With move", moves=[move])
-        self.assertEqual(pokemon.sheet.moves.get().move_id, move.pk)
+        move = Move.objects.create(
+            name="Shared move",
+            type="Normal",
+            category="Status",
+            frequency="At-Will",
+            range="Self",
+        )
+
+        pokemon = create_pokemon(
+            user=self.gm,
+            campaign=self.campaign,
+            base_form=self.base,
+            name="With move",
+            moves=[move],
+        )
+
+        self.assertEqual(
+            pokemon.sheet.moves.get().move_id,
+            move.pk,
+        )
 
 
 class SheetPageTests(PokemonFixture):
