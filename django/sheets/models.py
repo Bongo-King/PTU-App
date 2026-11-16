@@ -1112,3 +1112,42 @@ class SheetMove(models.Model):
 
     def __str__(self):
         return f"{self.sheet.name} — {self.move}"
+
+class SheetEdge(models.Model):
+    """An edge known by an individual, shared across its forms."""
+
+    sheet = models.ForeignKey(
+        "StatSheet",
+        on_delete=models.CASCADE,
+        related_name="edges",
+    )
+    edge = models.ForeignKey(
+        "reference.Edge",
+        on_delete=models.PROTECT,
+        related_name="sheet_entries",
+    )
+    notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.sheet.name} — {self.edge.name}"
+
+
+
+class SheetFeature(models.Model):
+    """A feature known by an individual, shared across its forms."""
+
+    sheet = models.ForeignKey(
+        "StatSheet",
+        on_delete=models.CASCADE,
+        related_name="features",
+    )
+
+    feature = models.ForeignKey(
+        "reference.Feature",
+        on_delete=models.PROTECT,
+        related_name="sheet_entries",
+    )
+    notes = models.TextField(blank=True)
+
+    def __str__(self):
+        return f"{self.sheet.name} — {self.feature.name}"

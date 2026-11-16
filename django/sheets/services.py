@@ -2,16 +2,21 @@
 Operations that create or update multiple sheet records.
 """
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError,PermissionDenied
 from django.db import transaction
 
-from reference.models import SpeciesForm
+from reference.models import SpeciesForm, Feature, Edge
+from .models import SheetFeature, SheetEdge, StatSheet, CharacterProfile
+from .permissions import DEFAULT_CONTROLLER, resolve_creation_controller, accessible_sheets
 
 from .choices import CapabilityChangeOperation
 from .constants import BASELINE_FIELDS, STAT_NAMES, SKILL_NAMES
+
+from .editing import update_sheet_value
 from .models import (
     StatSheet,
     PokemonProfile,
+    CharacterProfile,
     PokemonForm,
     SheetCapability,
     SheetAbility,
@@ -19,7 +24,6 @@ from .models import (
     PokemonFormCapabilityChange,
     PokemonFormAbilityGrant,
 )
-
 
 def _save_validated(instance):
     """Validate and save an instance, then return it."""
@@ -232,11 +236,11 @@ def add_pokemon_form(*, pokemon, source_form, name=None, ability_replacements=No
 @transaction.atomic
 def create_pokemon(
     *,
+    user,
     campaign,
     base_form,
     name,
-    current_hit_points,
-    controller=None,
+    controller=DEFAULT_CONTROLLER,
     level=1,
     gender="",
     nature="",
@@ -245,6 +249,7 @@ def create_pokemon(
     extra_abilities=(),
     moves=(),
     base_ability_replacements=None,
+ 
 ):
     """
     Create a Pokémon with its own editable baseline and local base form.
@@ -254,8 +259,14 @@ def create_pokemon(
     moves: selected Move records.
 
     Nature is stored but its stat effects are not applied here.
-    Current HP is supplied explicitly until HP calculations are implemented.
+    Current HP is initialized to the calculated maximum after creation.
     """
+    controller = resolve_creation_controller(
+        user=user,
+        campaign=campaign,
+        controller=controller,
+    )
+
     if base_form.pk is None:
         raise ValidationError("Save the reference base form first.")
 
@@ -277,7 +288,6 @@ def create_pokemon(
             name=name,
             gender=gender,
             level=level,
-            current_hit_points=current_hit_points,
             height=base.height,
             weight=base.weight,
             weight_class=base.weight_class,
@@ -340,4 +350,264 @@ def create_pokemon(
     pokemon.active_form = local_base
     _save_validated(pokemon)
 
+    sheet = pokemon.sheet
+    sheet.current_hit_points = sheet.get_real_max_hit_points()
+    sheet.full_clean()
+    sheet.save(update_fields=["current_hit_points"])
+
+
     return pokemon
+
+@transaction.atomic
+def change_pokemon_form(*, user, sheet_id, form_id):
+    """Activate an existing local form after checking access and ownership.
+
+    This service is independent of HTTP and can also be called by a React API.
+    Only active_form is persisted; baselines, abilities, moves and HP stay saved
+    exactly as they were. Return a freshly loaded profile with its new form.
+    """
+
+
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    try:
+        pokemon = PokemonProfile.objects.select_for_update().get(sheet_id=sheet_id)
+    except PokemonProfile.DoesNotExist:
+        raise ValidationError("This sheet does not have a Pokémon profile.") from None
+
+    try:
+        form = pokemon.forms.get(pk=form_id)
+    except (PokemonForm.DoesNotExist, ValueError, TypeError, OverflowError):
+        raise ValidationError("Select a local form belonging to this Pokémon.") from None
+
+    form.full_clean()
+    pokemon.active_form = form
+    pokemon.full_clean()
+    # An acquired ability may now conflict with a previously created form grant.
+    # Validate the candidate before saving so a failed switch leaves the old form active.
+    pokemon.get_effective_abilities()
+    pokemon.get_effective_capabilities()
+    pokemon.save(update_fields=["active_form"])
+    return pokemon
+
+
+#======================================= CHARACTER SHEET SERVICES ==================================
+#===================================================================================================
+
+@transaction.atomic
+def create_character(
+    *,
+    user,
+    campaign,
+    name="New Trainer",
+    controller=DEFAULT_CONTROLLER,
+):
+    """Create a starter trainer sheet with full HP and AP."""
+
+    # 1. Check creation permissions and choose the controller.
+    controller = resolve_creation_controller(
+        user=user,
+        campaign=campaign,
+        controller=controller,
+    )
+
+    # 2. Start every skill at Untrained.
+    skill_defaults = {
+        f"{skill}_rank": 2
+        for skill in SKILL_NAMES
+    }
+
+    # 3. Build the local sheet from our starter template.
+    # Other fields use their existing model defaults:
+    # zero allocations, bonuses, stages, injuries, and temporary HP.
+    sheet = StatSheet(
+        campaign=campaign,
+        controller=controller,
+        kind=StatSheet.Kind.CHARACTER,
+        name=name,
+        level=1,
+        hp_base=10,
+        atk_base=5,
+        def_base=5,
+        sp_atk_base=5,
+        sp_def_base=5,
+        speed_base=5,
+        **skill_defaults,
+    )
+
+    # Initialize current HP using the existing calculation.
+    sheet.current_hit_points = sheet.get_real_max_hit_points()
+    sheet.full_clean()
+    sheet.save()
+
+    # 4. Create the linked trainer profile with full AP.
+    character = CharacterProfile(sheet=sheet)
+    character.current_ap = character.get_max_action_points()
+    character.full_clean()
+    character.save()
+
+    return character
+
+
+
+#======================================= ADD FEATURES/EDGES ==================================
+
+
+
+@transaction.atomic
+def add_sheet_feature(user, sheet_id, feature_id, *, notes=""):
+    """Add one feature acquisition to a sheet the user can edit."""
+
+    # 1. Check permission to edit this sheet.
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    # 2. Retrieve the reusable reference definition.
+    try:
+        feature = Feature.objects.get(pk=feature_id)
+    except Feature.DoesNotExist:
+        raise ValidationError("The selected feature does not exist.") from None
+
+    # 3. Construct the individual acquisition.
+    entry = SheetFeature(
+        sheet_id=sheet_id,
+        feature=feature,
+        notes=notes,
+    )
+
+    # 4. Validate its fields and any model-level rules.
+    entry.full_clean()
+
+    # 5. Save and return the new acquisition.
+    entry.save()
+    return entry
+
+@transaction.atomic
+def add_sheet_edge(user, sheet_id, edge_id, *, notes=""):
+    """Add one feature acquisition to a sheet the user can edit."""
+
+    # 1. Check permission to edit this sheet.
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    # 2. Retrieve the reusable reference definition.
+    try:
+        edge = Edge.objects.get(pk=edge_id)
+    except Edge.DoesNotExist:
+        raise ValidationError("The selected edge does not exist.") from None
+
+    # 3. Construct the individual acquisition.
+    entry = SheetEdge(
+        sheet_id=sheet_id,
+        edge=edge,
+        notes=notes,
+    )
+
+    # 4. Validate its fields and any model-level rules.
+    entry.full_clean()
+
+    # 5. Save and return the new acquisition.
+    entry.save()
+    return entry
+
+@transaction.atomic
+def update_sheet_feature(user, sheet_id, entry_id, *, notes):
+    """Update the notes for one feature acquisition on a sheet."""
+
+    # 1. Check permission to edit this sheet.
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    # 2. Retrieve this acquisition, restricted to this sheet.
+    try:
+        entry = SheetFeature.objects.select_for_update().get(
+            pk=entry_id,
+            sheet_id=sheet_id,
+        )
+    except SheetFeature.DoesNotExist:
+        raise ValidationError(
+            "The selected feature acquisition does not exist on this sheet."
+        ) from None
+
+    # 3. Apply and validate the change.
+    entry.notes = notes
+    entry.full_clean()
+
+    # 4. Save only the field we intended to change.
+    entry.save(update_fields=["notes"])
+    return entry
+
+
+@transaction.atomic
+def update_sheet_edge(user, sheet_id, entry_id, *, notes=""):
+
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet."
+                               
+    )
+
+    try:
+        entry = SheetEdge.objects.get(
+            pk=entry_id,
+            sheet_id=sheet_id,
+        )
+    except SheetEdge.DoesNotExist:
+        raise ValidationError("The selected edge does not exist.") from None
+
+    entry.notes = notes
+    entry.full_clean()
+
+    # 4. Save only the field we intended to change.
+    entry.save(update_fields=["notes"])
+    return entry
+
+
+@transaction.atomic
+def remove_sheet_feature(user, sheet_id, entry_id):
+    """Remove one feature acquisition from a sheet."""
+
+    # 1. Check permission to edit this sheet.
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    # 2. Retrieve the acquisition belonging to this sheet.
+    try:
+        entry = SheetFeature.objects.select_for_update().get(
+            pk=entry_id,
+            sheet_id=sheet_id,
+        )
+    except SheetFeature.DoesNotExist:
+        raise ValidationError(
+            "The selected feature acquisition does not exist on this sheet."
+        ) from None
+
+    # 3. Delete this acquisition.
+    entry.delete()
+
+
+@transaction.atomic
+def remove_sheet_edge(user, sheet_id, entry_id):
+    """Remove one edge acquisition from a sheet."""
+
+    # 1. Check permission to edit this sheet.
+    if not accessible_sheets(user).filter(pk=sheet_id).exists():
+        raise PermissionDenied("You do not have access to this sheet.")
+
+    # 2. Retrieve the acquisition belonging to this sheet.
+    try:
+        entry = SheetEdge.objects.select_for_update().get(
+            pk=entry_id,
+            sheet_id=sheet_id,
+        )
+    except SheetEdge.DoesNotExist:
+        raise ValidationError(
+            "The selected edge acquisition does not exist on this sheet."
+        ) from None
+
+    # 3. Delete this acquisition.
+    entry.delete()
+
+
+
+    

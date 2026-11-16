@@ -1,0 +1,9 @@
+<section class="card">
+<h2>Change form</h2>
+<form method="post" action="{% url 'sheets:switch_form' sheet.pk %}">
+    {% csrf_token %}
+    {{ form_selection.as_p }}
+    <button type="submit">Change form</button>
+</form>
+<p class="muted">Select one of this Pokémon’s saved local forms. Calculated values update when you switch.</p>
+</section>

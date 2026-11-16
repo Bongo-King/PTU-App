@@ -1,0 +1,8 @@
+{% extends "sheets/base.html" %}{% block content %}<h1>Your sheets</h1>
+<p class="muted">Sheets you control, manage as GM, or have been granted access to.</p>
+<div class="grid">{% for sheet in sheets %}<article class="card">
+<h2>
+<a href="{% url 'sheets:detail' sheet.pk %}">{{ sheet.name|default:"Unnamed sheet" }}</a>
+</h2>
+<p>{{ sheet.campaign.name }} · {{ sheet.get_kind_display }} · Level {{ sheet.level }}</p>
+</article>{% empty %}<p>No sheets are available to this account yet.</p>{% endfor %}</div>{% endblock %}

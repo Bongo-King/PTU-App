@@ -1,0 +1,26 @@
+{% extends "sheets/base.html" %}
+{% block title %}{{ sheet.name }} · Borya{% endblock %}
+{% block content %}
+<a href="{% url 'sheets:list' %}">← Your sheets</a>
+<h1>{{ sheet.name|default:"Unnamed sheet" }}</h1>
+<p class="muted">{{ sheet.campaign.name }} · {{ sheet.get_kind_display }} · Level {{ sheet.level }} · Sheet testing tool</p>
+{% if profile %}<p>{{ profile.species.name }} · {{ profile.active_form.name }}{% if profile.nature %} · {{ profile.nature }}{% endif %} · {{ types|join:" / " }}</p>{% endif %}
+{% if messages %}
+<ul role="status">{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
+{% endif %}
+{% if form_selection %}{% include "sheets/form_selector.html" %}{% endif %}
+{% if max_ap != None %}<p>AP: {{ current_ap }} / {{ max_ap }}</p>{% endif %}
+{% include "sheets/live_editor.html" %}
+<section class="card">
+<h2>Abilities</h2>{% for ability in abilities %}<h3>{{ ability.name }}</h3>
+<p class="prose">{{ ability.effect }}</p>{% empty %}<p>No abilities to display.</p>{% endfor %}</section>
+<section class="card">
+<h2>Moves</h2>{% for entry in moves %}<h3>{{ entry.move.name }}</h3>
+<p class="muted">{{ entry.move.type }} · {{ entry.move.category }} · {{ entry.move.frequency }} · {{ entry.move.range }}</p>
+<p class="prose">{{ entry.move.effect }}</p>{% if entry.notes %}<p class="prose">{{ entry.notes }}</p>{% endif %}{% empty %}<p>No moves learned.</p>{% endfor %}</section>
+<section class="card">
+<h2>Profile & notes</h2>
+<p>{{ sheet.gender }} · Height: {{ sheet.height|default:"—" }} · Weight: {{ sheet.weight|default:"—" }}</p>
+<p class="prose">{{ sheet.notes|default:"No notes." }}</p>
+</section>
+{% endblock %}

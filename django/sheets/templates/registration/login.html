@@ -1,0 +1,7 @@
+{% extends "sheets/base.html" %}{% block content %}<section class="card">
+<h1>Log in</h1>
+<p>Use your campaign account to view your sheets.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<input type="hidden" name="next" value="{{ next }}">
+<button>Log in</button>
+</form>
+</section>{% endblock %}

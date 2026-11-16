@@ -1,0 +1,8 @@
+{% extends "sheets/base.html" %}
+{% block title %}Change form · {{ sheet.name }}{% endblock %}
+{% block content %}
+<a href="{% url 'sheets:detail' sheet.pk %}">← Back to {{ sheet.name }}</a>
+<h1>Unable to change form</h1>
+<p>Your previous active form is unchanged. Correct the selection or its local data and try again.</p>
+{% include "sheets/form_selector.html" %}
+{% endblock %}

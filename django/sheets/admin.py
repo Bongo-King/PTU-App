@@ -16,6 +16,8 @@ from .models import (
     SheetAbility,
     PokemonFormAbilityGrant,
     SheetMove,
+    SheetEdge,
+    SheetFeature
 )
 
 admin.site.register([
@@ -29,4 +31,6 @@ admin.site.register([
     SheetAbility,
     PokemonFormAbilityGrant,
     SheetMove,
+    SheetEdge,
+    SheetFeature
 ])

@@ -1,0 +1,40 @@
+{% load static %}
+<section id="live-editor" data-url="{% url 'sheets:edit_value' sheet.pk %}">
+{% csrf_token %}
+<p>Edits save automatically after a short pause or when you leave a field. Base stats and skill ranks are local baseline values; the active form is applied to the calculated totals.</p>
+<p>Skill bonuses add a flat amount to the roll. Capability baselines and active-form adjustments are labeled separately.</p>
+<p id="save-status" role="status" aria-live="polite">Ready to edit.</p>
+<noscript><p class="warning">Enable JavaScript to save edits from this testing page.</p></noscript>
+<div class="grid">
+{% for group in live_values.groups %}
+<section class="card"><h2>{{ group.name }}</h2>
+{% for field in group.fields %}
+<div class="live-field">
+{% if field.target %}
+<label for="edit-{{ field.target }}">{{ field.label }}</label>
+{% if field.stage %}
+<select id="edit-{{ field.target }}" data-target="{{ field.target }}" aria-describedby="error-{{ field.target }}"></select>
+{% else %}
+<input id="edit-{{ field.target }}" type="number" step="1" min="{{ field.min }}" max="{{ field.max }}" value="{{ field.value|default_if_none:'' }}" data-target="{{ field.target }}" aria-describedby="error-{{ field.target }}">
+{% endif %}
+<small id="error-{{ field.target }}" class="field-error" data-error="{{ field.target }}" role="alert"></small>
+{% else %}
+<label>{{ field.label }} <small>(calculated)</small></label>
+<output data-output="{{ field.output }}">{{ field.value|default_if_none:'—' }}</output>
+{% endif %}
+</div>
+{% endfor %}
+</section>
+{% endfor %}
+</div>
+<section class="card"><h2>Effective capabilities</h2><div id="effective-capabilities"></div></section>
+{% if sheet.kind == 'character' %}
+<section class="card"><h2>Standard trainer calculations</h2><p>Derived from skills and Speed stages. Saved local capability entries are edited above.</p><div id="trainer-capabilities"></div></section>
+{% endif %}
+<details class="warning" id="live-warnings"><summary>Some values need attention</summary><ul></ul></details>
+</section>
+{{ live_values|json_script:'live-initial' }}
+<style>
+.live-field{display:grid;grid-template-columns:minmax(0,1fr) minmax(5rem,7rem);align-items:center;gap:.4rem;margin:.65rem 0}.live-field input,.live-field select{width:100%;padding:.5rem}.live-field output{padding:.5rem;background:#eef3f0;border-radius:4px}.field-error{grid-column:1/-1;color:#922b21}.live-field [aria-invalid=true]{outline:2px solid #b6392e}#save-status{position:sticky;top:0;background:#e4eee8;padding:.7rem;z-index:1}
+</style>
+<script src="{% static 'sheets/live_editor.js' %}" defer></script>
