@@ -1,3 +1,36 @@
 from django.contrib import admin
+from .models import (
+    Move,
+    Ability,
+    Capability,
+    Feature,
+    Edge,
+    Species,
+    SpeciesEvolution,
+    SpeciesAbility,
+    SpeciesMove,
+    SpeciesForm,
+    FormCapability,
+    FormAbilityGrant,
+    EggGroup,
+    Diet,
+    Habitat,
+)
 
-# Register your models here.
+admin.site.register([
+    Move,
+    Ability,
+    Capability,
+    Feature,
+    Edge,
+    Species,
+    SpeciesEvolution,
+    SpeciesAbility,
+    SpeciesMove,
+    SpeciesForm,
+    FormCapability,
+    FormAbilityGrant,
+    EggGroup,
+    Diet,
+    Habitat,
+])

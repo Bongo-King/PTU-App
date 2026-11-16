@@ -1,3 +1,8 @@
+'''
+reference/models.py
+Description: Defines all the models relevant to permanent stored reference information in the db
+'''
+
 from django.db import models
 
 #choices.py is where all the choices info is stored

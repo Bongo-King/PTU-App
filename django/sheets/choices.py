@@ -1,3 +1,8 @@
+'''
+sheets/choices.py
+Description: Defines all the textChoices used primarily in sheets
+'''
+
 from django.db import models
 
 

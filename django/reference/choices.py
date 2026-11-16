@@ -1,3 +1,8 @@
+'''
+sheets/choices.py
+Description: Defines all the textChoices used primarily in reference
+'''
+
 from django.db import models
 
 #defines the elemental type of a move/pokemon

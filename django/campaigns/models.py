@@ -1,4 +1,5 @@
 '''
+campaigns/models.py
 Description: Defines all the models relevant to campaign organization and membership
 '''
 

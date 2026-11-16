@@ -1,3 +1,8 @@
+'''
+sheets/models.py
+Description: Defines all the models relevant to sheet management and editing
+'''
+
 from django.conf import settings
 from django.db import models
 
@@ -6,6 +11,8 @@ from django.core.validators import MinValueValidator
 
 from reference.choices import Type, CapabilityKind, AbilityTier
 from .choices import CapabilityChangeOperation, Nature
+from .constants import STAT_NAMES, SKILL_NAMES
+
 
 
 
@@ -49,8 +56,8 @@ class StatSheet(models.Model):
     gender = models.CharField(blank=True, max_length= 15)
     level = models.PositiveSmallIntegerField(default=1)
     xp = models.PositiveSmallIntegerField(default=0)
-    height = models.CharField(blank=True, max_length=10)
-    weight = models.CharField(blank=True, max_length=10)
+    height = models.CharField(max_length=100, blank=True)
+    weight = models.CharField(max_length=100, blank=True)
     weight_class = models.PositiveSmallIntegerField(blank=True, null=True,)
     notes = models.TextField(blank=True)
 
@@ -266,6 +273,174 @@ class PokemonProfile(models.Model):
 
         if errors:
             raise ValidationError(errors)
+
+    def _get_active_local_form(self):
+        """Return the active local form, rejecting missing or invalid selections."""
+        if self.active_form_id is None:
+            raise ValidationError("This Pokémon has no active form.")
+
+        form = self.active_form
+
+        if form.pokemon_id != self.pk:
+            raise ValidationError(
+                "The active form belongs to another Pokémon."
+            )
+
+        return form
+
+    def get_effective_base_stat(self, stat):
+        """Return an individual base stat plus the active form's difference."""
+        if stat not in STAT_NAMES:
+            raise ValueError(f"Unknown stat: {stat}")
+
+        form = self._get_active_local_form()
+        value = (
+            getattr(self.sheet, f"{stat}_base")
+            + getattr(form, f"{stat}_delta")
+        )
+
+        if value < 0:
+            raise ValidationError(
+                f"The active form produces a negative {stat} base stat."
+            )
+
+        return value
+
+    def get_stat_before_stages(self, stat):
+        """
+        Return base + form difference + allocation + manual bonus.
+
+        Nature, combat stages, and other rule effects are not applied yet.
+        For 'hp', this is the HP stat, not maximum hit points.
+        """
+        return (
+            self.get_effective_base_stat(stat)
+            + getattr(self.sheet, f"{stat}_alloc")
+            + getattr(self.sheet, f"{stat}_bonus")
+        )
+
+    def get_effective_skill(self, skill):
+        """Return a dictionary containing the skill's dice count and flat bonus."""
+        if skill not in SKILL_NAMES:
+            raise ValueError(f"Unknown skill: {skill}")
+
+        form = self._get_active_local_form()
+
+        rank = (
+            getattr(self.sheet, f"{skill}_rank")
+            + getattr(form, f"{skill}_rank_delta")
+        )
+        bonus = (
+            getattr(self.sheet, f"{skill}_bonus")
+            + getattr(form, f"{skill}_bonus_delta")
+        )
+
+        if rank < 1:
+            raise ValidationError(
+                f"{skill} must have at least one die before it can be rolled."
+            )
+
+        return {"rank": rank, "bonus": bonus}
+
+    def get_effective_capabilities(self):
+        """
+        Return capabilities keyed by ID.
+
+        Each value contains the Capability object and its effective value.
+        Descriptive capabilities have value=None.
+        """
+        form = self._get_active_local_form()
+
+        result = {
+            entry.capability_id: {
+                "capability": entry.capability,
+                "value": entry.value,
+            }
+            for entry in self.sheet.capabilities.select_related("capability")
+        }
+
+        for change in form.capability_changes.select_related("capability"):
+            capability_id = change.capability_id
+            change.full_clean()
+
+            if change.operation == CapabilityChangeOperation.REMOVE:
+                result.pop(capability_id, None)
+
+            elif change.operation == CapabilityChangeOperation.GRANT:
+                # Preserve an independently owned capability.
+                # For numeric grants, use the greater of the two values.
+                if capability_id not in result:
+                    result[capability_id] = {
+                        "capability": change.capability,
+                        "value": change.value,
+                    }
+
+                elif change.value is not None:
+                    existing = result[capability_id]["value"]
+
+                    if existing is None:
+                        raise ValidationError(
+                            "A numeric capability has no baseline value."
+                        )
+
+                    result[capability_id]["value"] = max(
+                        existing, change.value
+                    )
+
+            elif change.operation == CapabilityChangeOperation.ADJUST:
+                if capability_id not in result:
+                    raise ValidationError(
+                        f"Cannot adjust {change.capability}: "
+                        "it is missing from the individual's baseline."
+                    )
+
+                baseline = result[capability_id]["value"]
+
+                if baseline is None:
+                    raise ValidationError(
+                        "Cannot numerically adjust a descriptive capability."
+                    )
+
+                value = baseline + change.value
+
+                if value < 0:
+                    raise ValidationError(
+                        f"The form produces a negative value for "
+                        f"{change.capability}."
+                    )
+
+                result[capability_id]["value"] = value
+
+        return result
+
+    def get_effective_abilities(self):
+        """Return normal abilities plus active form grants, without duplicates."""
+        form = self._get_active_local_form()
+
+        abilities = {
+            entry.ability_id: entry.ability
+            for entry in self.sheet.abilities.select_related("ability")
+        }
+
+        for grant in form.ability_grants.select_related("ability"):
+            if grant.ability_id in abilities:
+                raise ValidationError(
+                    f"The form grant {grant.ability} is already known. "
+                    "Review the local form's fallback selection."
+                )
+
+            abilities[grant.ability_id] = grant.ability
+
+        return list(abilities.values())
+
+    def get_effective_types(self):
+        """Return the active local form's complete type list."""
+        form = self._get_active_local_form()
+        return [
+            value
+            for value in (form.type_primary, form.type_secondary)
+            if value
+        ]
 
         
 

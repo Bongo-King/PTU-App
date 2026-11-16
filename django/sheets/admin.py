@@ -4,6 +4,29 @@ from django.contrib import admin
 from .models import *
 
 
-admin.site.register(StatSheet)
-admin.site.register(SheetAccess)
+from django.contrib import admin
+from .models import (
+    StatSheet,
+    SheetAccess,
+    CharacterProfile,
+    PokemonProfile,
+    PokemonForm,
+    SheetCapability,
+    PokemonFormCapabilityChange,
+    SheetAbility,
+    PokemonFormAbilityGrant,
+    SheetMove,
+)
 
+admin.site.register([
+    StatSheet,
+    SheetAccess,
+    CharacterProfile,
+    PokemonProfile,
+    PokemonForm,
+    SheetCapability,
+    PokemonFormCapabilityChange,
+    SheetAbility,
+    PokemonFormAbilityGrant,
+    SheetMove,
+])
