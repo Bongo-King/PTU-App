@@ -96,6 +96,7 @@ class Capability(models.Model):
         max_length=12,
         choices= CapabilityKind.choices
     )
+    is_movement_speed = models.BooleanField(default=False)
     description = models.TextField()
 
     def __str__(self):

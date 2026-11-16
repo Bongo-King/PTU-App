@@ -12,6 +12,7 @@ from django.core.validators import MinValueValidator
 from reference.choices import Type, CapabilityKind, AbilityTier
 from .choices import CapabilityChangeOperation, Nature
 from .constants import STAT_NAMES, SKILL_NAMES
+from . import calculations as calc
 
 
 
@@ -149,11 +150,133 @@ class StatSheet(models.Model):
     perception_bonus = models.SmallIntegerField(default=0)
     focus_bonus = models.SmallIntegerField(default=0)
 
+
+
+    def get_stat_breakdown(self, stat, *, percent_modifiers=()):
+        """Calculate a stat and return its individual components."""
+        if stat not in STAT_NAMES:
+            raise ValueError(f"Unknown stat: {stat}")
+
+        nature = ""
+        form_delta = 0
+
+        if self.kind == self.Kind.POKEMON:
+            profile = self.pokemon_profile
+            nature = profile.nature
+
+            if stat != "hp":
+                form = profile._get_active_local_form()
+                form_delta = getattr(form, f"{stat}_delta")
+
+        elif self.kind != self.Kind.CHARACTER:
+            raise ValueError(f"Unknown sheet kind: {self.kind}")
+
+        # HP never has combat stages.
+        stage = 0 if stat == "hp" else getattr(self, f"{stat}_cs")
+
+        return calc.calculate_stat(
+            stat=stat,
+            base=getattr(self, f"{stat}_base"),
+            form_delta=form_delta,
+            nature=nature,
+            allocated=getattr(self, f"{stat}_alloc"),
+            flat_bonus=getattr(self, f"{stat}_bonus"),
+            stage=stage,
+            percent_modifiers=percent_modifiers,
+        )
+
+    def get_stat_before_stages(self, stat):
+        """Return the stat before combat stages and percentage modifiers."""
+        return self.get_stat_breakdown(stat)["before_percentages"]
+
+    def get_effective_stat(self, stat, *, percent_modifiers=()):
+        """Return the final stat after applicable modifiers."""
+        return self.get_stat_breakdown(
+            stat,
+            percent_modifiers=percent_modifiers,
+        )["final"]
+
+    def get_real_max_hit_points(self):
+        """Return maximum HP used for damage fractions and HP markers."""
+        return calc.real_max_hit_points(
+            kind=self.kind,
+            level=self.level,
+            hp_stat=self.get_effective_stat("hp"),
+        )
+
+    def get_healing_limit(self):
+        """Return the injury-adjusted maximum without changing current HP."""
+        return calc.injury_healing_limit(
+            self.get_real_max_hit_points(),
+            self.injuries,
+        )
+
+    def get_accuracy(self):
+        """Return the total accuracy modifier."""
+        return calc.calculate_accuracy(
+            bonus=self.accuracy_bonus,
+            stage=self.accuracy_cs,
+        )
+
+    def get_evasion_breakdown(self, category):
+        """Return stat contribution, total evasion, and capped AC increase."""
+        stat_for_category = {
+            "physical": "def",
+            "special": "sp_def",
+            "speed": "speed",
+        }
+
+        if category not in stat_for_category:
+            raise ValueError(f"Unknown evasion category: {category}")
+
+        stat = stat_for_category[category]
+
+        return calc.calculate_evasion(
+            self.get_effective_stat(stat),
+            bonus=getattr(self, f"{category}_evasion_bonus"),
+            evasion_stage=self.evasion_cs,
+        )
+
+    def get_initiative(self):
+        """Return current Speed plus the initiative bonus."""
+        return calc.calculate_initiative(
+            self.get_effective_stat("speed"),
+            self.initiative_bonus,
+        )
+
+    def get_effective_skill(self, skill):
+        """Return skill dice and bonus for either sheet kind."""
+        if skill not in SKILL_NAMES:
+            raise ValueError(f"Unknown skill: {skill}")
+
+        if self.kind == self.Kind.POKEMON:
+            return self.pokemon_profile.get_effective_skill(skill)
+
+        if self.kind != self.Kind.CHARACTER:
+            raise ValueError(f"Unknown sheet kind: {self.kind}")
+
+        rank = getattr(self, f"{skill}_rank")
+
+        if rank < 1:
+            raise ValidationError(
+                f"{skill} must have at least one die before it can be rolled."
+            )
+
+        return {
+            "rank": rank,
+            "bonus": getattr(self, f"{skill}_bonus"),
+        }
+
+
     def __str__(self):
         return (
             f"{self.campaign.name} — {self.name} "
             f"(controller: {self.controller})"
         )
+
+
+
+    
 
 class SheetAccess(models.Model):
     sheet = models.ForeignKey(
@@ -289,15 +412,15 @@ class PokemonProfile(models.Model):
         return form
 
     def get_effective_base_stat(self, stat):
-        """Return an individual base stat plus the active form's difference."""
+        """Return the individual base stat plus any applicable form difference."""
         if stat not in STAT_NAMES:
             raise ValueError(f"Unknown stat: {stat}")
 
-        form = self._get_active_local_form()
-        value = (
-            getattr(self.sheet, f"{stat}_base")
-            + getattr(form, f"{stat}_delta")
-        )
+        value = getattr(self.sheet, f"{stat}_base")
+
+        if stat != "hp":
+            form = self._get_active_local_form()
+            value += getattr(form, f"{stat}_delta")
 
         if value < 0:
             raise ValidationError(
@@ -307,16 +430,14 @@ class PokemonProfile(models.Model):
         return value
 
     def get_stat_before_stages(self, stat):
-        """
-        Return base + form difference + allocation + manual bonus.
+        """Use the shared sheet calculation, including nature."""
+        return self.sheet.get_stat_before_stages(stat)
 
-        Nature, combat stages, and other rule effects are not applied yet.
-        For 'hp', this is the HP stat, not maximum hit points.
-        """
-        return (
-            self.get_effective_base_stat(stat)
-            + getattr(self.sheet, f"{stat}_alloc")
-            + getattr(self.sheet, f"{stat}_bonus")
+    def get_effective_stat(self, stat, *, percent_modifiers=()):
+        """Use the shared sheet calculation."""
+        return self.sheet.get_effective_stat(
+            stat,
+            percent_modifiers=percent_modifiers,
         )
 
     def get_effective_skill(self, skill):
@@ -411,7 +532,22 @@ class PokemonProfile(models.Model):
 
                 result[capability_id]["value"] = value
 
+        # Apply Speed stages once, after local form capability changes.
+        for entry in result.values():
+            if entry["capability"].is_movement_speed:
+                if entry["value"] is None:
+                    raise ValidationError(
+                        f"{entry['capability']} is marked as a movement "
+                        "speed but has no numeric value."
+                    )
+
+                entry["value"] = calc.apply_speed_stage_to_movement(
+                    entry["value"],
+                    self.sheet.speed_cs,
+                )
+
         return result
+    
 
     def get_effective_abilities(self):
         """Return normal abilities plus active form grants, without duplicates."""
@@ -479,7 +615,6 @@ class PokemonForm(models.Model):
     weight = models.CharField(max_length=100, blank=True)
 
     #form stat changes
-    hp_delta = models.SmallIntegerField(default=0)
     atk_delta = models.SmallIntegerField(default=0)
     def_delta = models.SmallIntegerField(default=0)
     sp_atk_delta = models.SmallIntegerField(default=0)
@@ -716,6 +851,80 @@ class CharacterProfile(models.Model):
 
     current_ap = models.PositiveSmallIntegerField(default=0)
     age = models.PositiveSmallIntegerField(default=0)
+
+
+    def get_max_action_points(self):
+        """Return maximum AP without changing current AP."""
+        return calc.max_action_points(self.sheet.level)
+
+
+    def get_derived_capabilities(
+        self,
+        *,
+        running_start=False,
+        skill_overrides=None,
+    ):
+        """
+        Calculate standard trainer capabilities.
+
+        skill_overrides maps a formula input to a replacement skill name.
+        These substitutions are supplied by the caller, not saved here.
+        """
+        skills = {
+            "power_athletics": "athletics",
+            "power_combat": "combat",
+            "high_jump": "acrobatics",
+            "long_jump": "acrobatics",
+            "overland_athletics": "athletics",
+            "overland_acrobatics": "acrobatics",
+            "throwing_range": "athletics",
+        }
+
+        overrides = dict(skill_overrides or {})
+        unknown = set(overrides) - set(skills)
+
+        if unknown:
+            raise ValueError(
+                f"Unknown capability formula inputs: {sorted(unknown)}"
+            )
+
+        skills.update(overrides)
+
+        def rank_for(input_name):
+            skill = skills[input_name]
+            return self.sheet.get_effective_skill(skill)["rank"]
+
+        # Compute both movement baselines before applying Speed stages.
+        overland_base = calc.trainer_overland(
+            rank_for("overland_athletics"),
+            rank_for("overland_acrobatics"),
+        )
+        swim_base = calc.trainer_swim(overland_base)
+
+        return {
+            "power": calc.trainer_power(
+                rank_for("power_athletics"),
+                rank_for("power_combat"),
+            ),
+            "high_jump": calc.trainer_high_jump(
+                rank_for("high_jump"),
+                running_start=running_start,
+            ),
+            "long_jump": calc.trainer_long_jump(
+                rank_for("long_jump"),
+            ),
+            "overland": calc.apply_speed_stage_to_movement(
+                overland_base,
+                self.sheet.speed_cs,
+            ),
+            "swim": calc.apply_speed_stage_to_movement(
+                swim_base,
+                self.sheet.speed_cs,
+            ),
+            "throwing_range": calc.trainer_throwing_range(
+                rank_for("throwing_range"),
+            ),
+        }
 
     def clean(self):
         """Validate that this profile belongs to a character sheet."""

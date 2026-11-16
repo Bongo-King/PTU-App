@@ -80,6 +80,9 @@ def add_pokemon_form(*, pokemon, source_form, name=None, ability_replacements=No
 
     # Reference hp_base becomes local hp_delta, etc.
     for stat in STAT_NAMES:
+        if stat == "hp":
+            continue
+
         field = f"{stat}_base"
         values[f"{stat}_delta"] = (
             getattr(source, field) - getattr(base, field)
